@@ -85,6 +85,20 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def _normalize_days(days: Any) -> list[int]:
+    """Validate + dedupe 0..6 weekdays (Mon..Sun). Empty = every day."""
+    if days is None:
+        return []
+    if not isinstance(days, list):
+        raise ValueError("`days_of_week` must be a list of integers 0..6")
+    out = set()
+    for d in days:
+        if not isinstance(d, int) or isinstance(d, bool) or not 0 <= d <= 6:
+            raise ValueError("`days_of_week` values must be integers 0..6")
+        out.add(d)
+    return sorted(out)
+
+
 def _empty_state() -> dict:
     return {
         "automations": [],
@@ -121,6 +135,7 @@ def _normalize_automation(raw: dict, default_enabled: bool = True) -> dict:
         "off_temp_c": float(off_temp),
         "active_start": active_start,
         "active_end": active_end,
+        "days_of_week": _normalize_days(raw.get("days_of_week")),
     }
 
 
@@ -316,6 +331,9 @@ class Thermostat(Generic):
     def _active_automation(self, now_local: datetime) -> dict | None:
         for auto in self._state.get("automations", []):
             if not auto.get("enabled"):
+                continue
+            days = auto.get("days_of_week") or []
+            if days and now_local.weekday() not in days:
                 continue
             start = _parse_hhmm(auto.get("active_start"))
             end = _parse_hhmm(auto.get("active_end"))
