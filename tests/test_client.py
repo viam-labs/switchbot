@@ -9,6 +9,7 @@ import hmac
 import httpx
 import pytest
 import respx
+
 from switchbot_module.client import BASE_URL, SwitchBotClient, SwitchBotError
 
 
