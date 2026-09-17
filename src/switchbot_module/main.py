@@ -11,6 +11,7 @@ from viam.resource.registry import Registry, ResourceCreatorRegistration
 from .bot import Bot
 from .curtain import Curtain
 from .meter import Meter
+from .thermostat import Thermostat
 
 
 def _register() -> None:
@@ -29,6 +30,11 @@ def _register() -> None:
         Meter.MODEL,
         ResourceCreatorRegistration(Meter.new, Meter.validate_config),
     )
+    Registry.register_resource_creator(
+        Generic.API,
+        Thermostat.MODEL,
+        ResourceCreatorRegistration(Thermostat.new, Thermostat.validate_config),
+    )
 
 
 async def main() -> None:
@@ -37,6 +43,7 @@ async def main() -> None:
     module.add_model_from_registry(Switch.API, Bot.MODEL)
     module.add_model_from_registry(Generic.API, Curtain.MODEL)
     module.add_model_from_registry(Sensor.API, Meter.MODEL)
+    module.add_model_from_registry(Generic.API, Thermostat.MODEL)
     await module.start()
 
 
