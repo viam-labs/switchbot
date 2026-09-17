@@ -78,7 +78,7 @@ Uses `rdk:component:generic` — control it through `DoCommand`:
 | `close` | — | Curtain fully closes |
 | `pause` | — | Stops mid-travel |
 | `set_position` | `position` (0-100) | Move to percentage (0 = fully open, 100 = fully closed) |
-| `get_status` | — | Returns raw SwitchBot status body (`slidePosition`, `battery`, …) |
+| `status` (alias `get_status`) | — | Returns `{ slide_position, battery, moving, calibrate, raw }` |
 
 ### Meter
 

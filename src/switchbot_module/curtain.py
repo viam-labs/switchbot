@@ -1,8 +1,9 @@
 """SwitchBot Curtain as a Viam generic component.
 
-DoCommand verbs: open, close, pause, set_position (0-100), get_status.
-Position uses SwitchBot's "setPosition" with parameter "0,ff,{n}" where
-n is percent 0..100 (0 = fully open, 100 = fully closed).
+DoCommand verbs: open, close, pause, set_position (0-100), status
+(alias: get_status). Position uses SwitchBot's "setPosition" with
+parameter "0,ff,{n}" where n is percent 0..100 (0 = fully open, 100
+= fully closed).
 """
 
 from collections.abc import Mapping, Sequence
@@ -71,8 +72,16 @@ class Curtain(Generic):
             result = await self._client.send_command(
                 self._device_id, "setPosition", parameter=f"0,ff,{position}"
             )
-        elif verb == "get_status":
-            result = await self._client.get_status(self._device_id)
+        elif verb in ("status", "get_status"):
+            raw = await self._client.get_status(self._device_id)
+            slide_position = raw.get("slidePosition")
+            return {
+                "slide_position": slide_position,
+                "battery": raw.get("battery"),
+                "moving": raw.get("moving"),
+                "calibrate": raw.get("calibrate"),
+                "raw": dict(raw),
+            }
         else:
             raise ValueError(f"unknown command: {verb!r}")
         return {"ok": True, "result": dict(result)}
