@@ -55,7 +55,18 @@ Example machine config entry:
 }
 ```
 
-Position semantics: `set_position(1)` sends `turnOn`, `set_position(0)` sends `turnOff`. `get_position()` polls the current on/off state.
+Position semantics: `set_position(1)` sends `turnOn`, `set_position(0)` sends `turnOff`.
+
+`get_position()` returns the **last position we commanded**, persisted to `~/.viam/switchbot-bot-<name>-state.json`. This is intentional — SwitchBot's cloud `power` field for a Bot in "Press mode" is unreliable, and callers making decisions on `get_position` (Thermostat controller, dashboard) were seeing garbage. Persisted state is authoritative once we've commanded at least once; on first-ever call we fall back to SwitchBot's report as a seed.
+
+Diverges if someone presses the physical Bot or toggles via the SwitchBot app — we don't reconcile automatically. A subsequent `set_position` from any caller overwrites the local state.
+
+Extra `do_command` verbs:
+
+| `command` | Effect |
+|---|---|
+| `state` | Returns `{ position, last_set_at, last_set_position }` from the state file |
+| `resync` | Force-fetch from SwitchBot and overwrite the state file (use after out-of-band changes) |
 
 ### Curtain
 
