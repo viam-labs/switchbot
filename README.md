@@ -96,15 +96,15 @@ Works for the standalone Meter, Meter Plus, and the sensor built into the Hub 2 
 
 ### Thermostat
 
-Higher-level automation: reads a Meter, presses a Bot when temperature crosses configured thresholds. Runs on the Pi in a background loop so it works 24/7, regardless of whether the dashboard is open.
+Higher-level automation: reads a Meter, presses a Bot when temperature crosses configured thresholds. Holds an **ordered list of named automations** — the loop picks the first one that's enabled and inside its active-hours window, and uses its thresholds. Lets you define e.g. a "Day" and "Night" automation with different setpoints. Runs on the Pi so it works 24/7 regardless of the dashboard.
 
-Direction is inferred from the relative position of the two thresholds — the same code drives cooling (A/C) and heating (heat pump / space heater).
+Threshold direction is inferred per-automation from the relative position of the two values:
 
 - **Cooling** (`on_temp_c` > `off_temp_c`): press Bot on when temp rises above `on_temp_c`; off when it falls below `off_temp_c`. Example: `on=25, off=22`.
 - **Heating** (`on_temp_c` < `off_temp_c`): press Bot on when temp falls below `on_temp_c`; off when it rises above `off_temp_c`. Example: `on=18, off=21`.
-- Between the two thresholds, do nothing (hysteresis prevents rapid on/off).
+- Between the two thresholds, nothing happens (hysteresis).
 
-Config (A/C example):
+Config:
 
 ```json
 {
@@ -115,11 +115,22 @@ Config (A/C example):
   "attributes": {
     "bot_name": "ac_bot",
     "meter_name": "room_meter",
-    "on_temp_c": 25,
-    "off_temp_c": 22,
-    "active_start": "07:00",
-    "active_end": "22:00",
-    "enabled": true,
+    "automations": [
+      {
+        "name": "Day",
+        "on_temp_c": 25,
+        "off_temp_c": 22,
+        "active_start": "07:00",
+        "active_end": "22:00"
+      },
+      {
+        "name": "Night",
+        "on_temp_c": 26,
+        "off_temp_c": 24,
+        "active_start": "22:00",
+        "active_end": "07:00"
+      }
+    ],
     "poll_interval_sec": 60,
     "cooldown_sec": 300
   }
@@ -127,17 +138,17 @@ Config (A/C example):
 ```
 
 - `bot_name` / `meter_name` — resource names of the dependencies (also listed in `depends_on`).
-- `on_temp_c` / `off_temp_c` — Celsius. Must differ; relative order determines direction (cooling vs heating).
-- `active_start` / `active_end` — 24-hour `HH:MM` window when the controller acts. Both blank = always active. `start > end` wraps midnight (e.g. `22:00` → `06:00`).
-- `enabled` — initial master switch state. Can be toggled at runtime via `do_command`.
+- `automations` — ordered list. First automation that's enabled AND currently in its active window wins.
+- Each automation: `{name, on_temp_c, off_temp_c, active_start?, active_end?, enabled?}`. Both `active_start` and `active_end` blank = always active. `start > end` wraps midnight.
 - `poll_interval_sec` (default 60) — how often the loop wakes to check.
-- `cooldown_sec` (default 300) — minimum interval between two actions, so an oscillating temperature doesn't cause rapid pressing.
+- `cooldown_sec` (default 300) — minimum interval between two Bot presses so an oscillating temperature doesn't cause rapid pressing.
+- Legacy config with top-level `on_temp_c` / `off_temp_c` / `active_start` / `active_end` is auto-migrated to a single automation named "Default" on first load.
 
-Runtime state (enabled, thresholds, active hours, last-action metadata) is persisted to `~/.viam/switchbot-thermostat-<name>-state.json`. Runtime changes override the config values on load.
+Runtime state (the automations list, their enabled flags, their order, plus last-action metadata) is persisted to `~/.viam/switchbot-thermostat-<name>-state.json`. Runtime edits via `do_command` become the source of truth; config values only seed an empty state file on first run.
 
 #### Commands
 
-`status` — reads meter + bot and returns the full state:
+`status` — reads meter + bot and returns the full state, including every automation:
 
 ```json
 { "command": "status" }
@@ -146,13 +157,19 @@ Runtime state (enabled, thresholds, active hours, last-action metadata) is persi
 Response:
 ```json
 {
-  "enabled": true,
-  "on_temp_c": 25.0,
-  "off_temp_c": 22.0,
-  "mode": "cooling",
-  "active_start": "07:00",
-  "active_end": "22:00",
-  "within_active_window": true,
+  "automations": [
+    {
+      "id": "a1b2c3d4",
+      "name": "Day",
+      "enabled": true,
+      "on_temp_c": 25.0,
+      "off_temp_c": 22.0,
+      "active_start": "07:00",
+      "active_end": "22:00",
+      "mode": "cooling"
+    }
+  ],
+  "active_id": "a1b2c3d4",
   "temperature_c": 23.4,
   "humidity_pct": 48,
   "bot_position": 1,
@@ -161,21 +178,42 @@ Response:
 }
 ```
 
-`mode` is inferred: `"cooling"` if `on_temp_c > off_temp_c`, `"heating"` otherwise.
-
-`set_enabled` — master on/off:
+`add_automation` — appends a new automation:
 ```json
-{ "command": "set_enabled", "enabled": false }
+{
+  "command": "add_automation",
+  "automation": {
+    "name": "Night",
+    "on_temp_c": 26,
+    "off_temp_c": 24,
+    "active_start": "22:00",
+    "active_end": "07:00",
+    "enabled": true
+  }
+}
 ```
 
-`set_thresholds` — hot-update the on/off temperatures. Swapping which is higher switches modes.
+`update_automation` — edits an existing automation (any field except `id`):
 ```json
-{ "command": "set_thresholds", "on_c": 25, "off_c": 21 }
+{
+  "command": "update_automation",
+  "automation": { "id": "a1b2c3d4", "on_temp_c": 27 }
+}
 ```
 
-`set_active_hours` — hot-update the active window (both empty = always active):
+`delete_automation` — removes by id:
 ```json
-{ "command": "set_active_hours", "start": "08:00", "end": "23:00" }
+{ "command": "delete_automation", "id": "a1b2c3d4" }
+```
+
+`set_automation_enabled` — per-automation on/off:
+```json
+{ "command": "set_automation_enabled", "id": "a1b2c3d4", "enabled": false }
+```
+
+`reorder_automations` — set the precedence order. `ids` must include every existing automation exactly once:
+```json
+{ "command": "reorder_automations", "ids": ["a1b2c3d4", "e5f6g7h8"] }
 ```
 
 ## Development

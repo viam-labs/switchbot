@@ -2,31 +2,32 @@
 
 Combines a Switch (typically the `viam:switchbot:bot` pointed at a
 remote) with a Sensor (typically the `viam:switchbot:meter` reading
-room temperature) into a temperature-triggered automation. The
-controller polls the meter on an interval and presses the switch when
-the reading crosses configured thresholds.
+room temperature) into a list of temperature-triggered automations.
 
-Direction is inferred from the relative position of the two
-thresholds so the same code drives both A/C and heat:
+The controller holds an ordered list of named automations. On each
+tick it walks the list, picks the first automation that is (a) enabled
+and (b) whose active-hours window includes "now", and uses that
+automation's thresholds to decide whether to press the Bot on or off.
+
+Threshold semantics are per-automation and infer direction from the
+relative position of the two values:
 
   - Cooling (A/C): `on_temp_c` > `off_temp_c` — turn on when temp
     rises above `on_temp_c`; turn off when it falls below `off_temp_c`.
-    Example: on=25, off=22.
   - Heating: `on_temp_c` < `off_temp_c` — turn on when temp falls
     below `on_temp_c`; turn off when it rises above `off_temp_c`.
-    Example: on=18, off=21.
 
-Between the two thresholds nothing happens (hysteresis prevents rapid
-on/off oscillation).
+Between the two thresholds nothing happens (hysteresis).
 
-Master switch (`enabled`) and active-hours window (`active_start`,
-`active_end`) can be toggled at runtime via do_command; runtime
-changes persist in the state file and override config on reload.
+Automations, their enabled flag, and their ordering all persist in
+the state file. Runtime edits via do_command override the initial
+config seed on load.
 """
 
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from datetime import time as time_of_day
@@ -54,18 +55,6 @@ def _mode_from_thresholds(on_temp_c: float, off_temp_c: float) -> str:
     return "cooling" if on_temp_c > off_temp_c else "heating"
 
 
-def _empty_state() -> dict:
-    return {
-        "enabled": True,
-        "on_temp_c": None,
-        "off_temp_c": None,
-        "active_start": None,
-        "active_end": None,
-        "last_action_at": None,
-        "last_action_position": None,
-    }
-
-
 def _parse_hhmm(value: Any) -> time_of_day | None:
     if value in (None, ""):
         return None
@@ -90,6 +79,77 @@ def _within_active_window(
         return start <= now_t < end
     # Window wraps midnight (e.g. 22:00 -> 06:00): active if outside [end, start).
     return now_t >= start or now_t < end
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def _empty_state() -> dict:
+    return {
+        "automations": [],
+        "last_action_at": None,
+        "last_action_position": None,
+    }
+
+
+def _normalize_automation(raw: dict, default_enabled: bool = True) -> dict:
+    """Coerce an automation dict into the canonical shape."""
+    if "on_temp_c" not in raw or "off_temp_c" not in raw:
+        raise ValueError("automation must include `on_temp_c` and `off_temp_c`")
+    on_temp = raw["on_temp_c"]
+    off_temp = raw["off_temp_c"]
+    if not isinstance(on_temp, int | float) or isinstance(on_temp, bool):
+        raise ValueError("`on_temp_c` must be a number")
+    if not isinstance(off_temp, int | float) or isinstance(off_temp, bool):
+        raise ValueError("`off_temp_c` must be a number")
+    if float(on_temp) == float(off_temp):
+        raise ValueError(
+            "`on_temp_c` and `off_temp_c` must differ " "(on > off = cooling, on < off = heating)"
+        )
+    active_start = raw.get("active_start") or None
+    active_end = raw.get("active_end") or None
+    _parse_hhmm(active_start)
+    _parse_hhmm(active_end)
+    if (active_start is None) != (active_end is None):
+        raise ValueError("provide both `active_start` and `active_end`, or neither")
+    return {
+        "id": raw.get("id") or _new_id(),
+        "name": str(raw.get("name") or "Default"),
+        "enabled": bool(raw.get("enabled", default_enabled)),
+        "on_temp_c": float(on_temp),
+        "off_temp_c": float(off_temp),
+        "active_start": active_start,
+        "active_end": active_end,
+    }
+
+
+def _migrate_legacy_state(loaded: dict) -> dict:
+    """Convert a v0.0.5 single-automation state file into the new shape."""
+    migrated = _empty_state()
+    if loaded.get("last_action_at"):
+        migrated["last_action_at"] = loaded["last_action_at"]
+    if loaded.get("last_action_position") in (0, 1):
+        migrated["last_action_position"] = loaded["last_action_position"]
+    on_temp = loaded.get("on_temp_c")
+    off_temp = loaded.get("off_temp_c")
+    if isinstance(on_temp, int | float) and isinstance(off_temp, int | float):
+        try:
+            migrated["automations"].append(
+                _normalize_automation(
+                    {
+                        "name": "Default",
+                        "enabled": loaded.get("enabled", True),
+                        "on_temp_c": on_temp,
+                        "off_temp_c": off_temp,
+                        "active_start": loaded.get("active_start"),
+                        "active_end": loaded.get("active_end"),
+                    }
+                )
+            )
+        except ValueError as e:
+            LOGGER.warning("legacy state migration dropped bad automation: %s", e)
+    return migrated
 
 
 class Thermostat(Generic):
@@ -124,20 +184,26 @@ class Thermostat(Generic):
         for field in ("bot_name", "meter_name"):
             if not attrs.get(field):
                 raise ValueError(f"`{field}` is required")
-        for field in ("on_temp_c", "off_temp_c"):
-            value = attrs.get(field)
-            if value is None:
-                raise ValueError(f"`{field}` is required")
-            if not isinstance(value, int | float) or isinstance(value, bool):
-                raise ValueError(f"`{field}` must be a number")
-        if float(attrs["on_temp_c"]) == float(attrs["off_temp_c"]):
-            raise ValueError(
-                "`on_temp_c` and `off_temp_c` must differ "
-                "(on > off = cooling, on < off = heating)"
+        raw_automations = attrs.get("automations")
+        if raw_automations is not None:
+            if not isinstance(raw_automations, list):
+                raise ValueError("`automations` must be a list")
+            for entry in raw_automations:
+                if not isinstance(entry, dict):
+                    raise ValueError("each automation must be an object")
+                _normalize_automation(entry)
+        elif "on_temp_c" in attrs or "off_temp_c" in attrs:
+            # Legacy single-automation config; normalize as a sanity check.
+            _normalize_automation(
+                {
+                    "name": "Default",
+                    "enabled": attrs.get("enabled", True),
+                    "on_temp_c": attrs.get("on_temp_c"),
+                    "off_temp_c": attrs.get("off_temp_c"),
+                    "active_start": attrs.get("active_start"),
+                    "active_end": attrs.get("active_end"),
+                }
             )
-        for field in ("active_start", "active_end"):
-            _parse_hhmm(attrs.get(field))
-        # Return the depends_on names so Viam brings them up first.
         return [str(attrs["bot_name"]), str(attrs["meter_name"])]
 
     def reconfigure(
@@ -166,21 +232,7 @@ class Thermostat(Generic):
         if self._meter is None:
             raise RuntimeError(f"Sensor dependency {self._meter_name!r} not found")
 
-        # Load persisted state; config values seed anything runtime hasn't
-        # overridden yet.
-        loaded = self._load_state()
-        self._state = _empty_state()
-        self._state.update({k: v for k, v in loaded.items() if k in self._state})
-        if self._state["on_temp_c"] is None:
-            self._state["on_temp_c"] = float(attrs["on_temp_c"])
-        if self._state["off_temp_c"] is None:
-            self._state["off_temp_c"] = float(attrs["off_temp_c"])
-        if self._state["active_start"] is None:
-            self._state["active_start"] = attrs.get("active_start") or None
-        if self._state["active_end"] is None:
-            self._state["active_end"] = attrs.get("active_end") or None
-        if "enabled" in attrs and "enabled" not in loaded:
-            self._state["enabled"] = bool(attrs["enabled"])
+        self._state = self._load_and_migrate_state(attrs)
 
         self._state_lock = asyncio.Lock()
         if self._bg_task and not self._bg_task.done():
@@ -189,6 +241,51 @@ class Thermostat(Generic):
             self._bg_task = asyncio.create_task(self._loop())
         except RuntimeError:
             self._bg_task = None
+
+    def _load_and_migrate_state(self, attrs: dict) -> dict:
+        loaded = self._load_state()
+        if "automations" in loaded:
+            state = loaded
+        elif loaded:
+            # v0.0.5-shaped state file — migrate to list form.
+            state = _migrate_legacy_state(loaded)
+        else:
+            state = _empty_state()
+
+        if not state.get("automations"):
+            # No automations persisted yet; seed from config.
+            state["automations"] = self._seed_automations_from_config(attrs)
+
+        return state
+
+    def _seed_automations_from_config(self, attrs: dict) -> list[dict]:
+        raw = attrs.get("automations")
+        if isinstance(raw, list):
+            out = []
+            for entry in raw:
+                try:
+                    out.append(_normalize_automation(entry))
+                except ValueError as e:
+                    LOGGER.warning("skipping bad config automation: %s", e)
+            return out
+        # Legacy single-automation config: build one "Default" from top-level.
+        if "on_temp_c" in attrs and "off_temp_c" in attrs:
+            try:
+                return [
+                    _normalize_automation(
+                        {
+                            "name": "Default",
+                            "enabled": attrs.get("enabled", True),
+                            "on_temp_c": attrs["on_temp_c"],
+                            "off_temp_c": attrs["off_temp_c"],
+                            "active_start": attrs.get("active_start"),
+                            "active_end": attrs.get("active_end"),
+                        }
+                    )
+                ]
+            except ValueError as e:
+                LOGGER.warning("legacy config automation invalid: %s", e)
+        return []
 
     # ------------------------------------------------------------------
     # State persistence
@@ -200,7 +297,7 @@ class Thermostat(Generic):
         try:
             return json.loads(path.read_text())
         except Exception as e:
-            LOGGER.warning("failed to load state from %s (using empty): %s", path, e)
+            LOGGER.warning("failed to load state from %s: %s", path, e)
             return {}
 
     def _save_state(self) -> None:
@@ -209,6 +306,22 @@ class Thermostat(Generic):
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(self._state, indent=2))
         tmp.replace(path)
+
+    def _find_automation(self, aid: str) -> dict | None:
+        for auto in self._state.get("automations", []):
+            if auto.get("id") == aid:
+                return auto
+        return None
+
+    def _active_automation(self, now_local: datetime) -> dict | None:
+        for auto in self._state.get("automations", []):
+            if not auto.get("enabled"):
+                continue
+            start = _parse_hhmm(auto.get("active_start"))
+            end = _parse_hhmm(auto.get("active_end"))
+            if _within_active_window(now_local, start, end):
+                return auto
+        return None
 
     # ------------------------------------------------------------------
     # Background loop
@@ -226,12 +339,9 @@ class Thermostat(Generic):
     async def _tick(self) -> None:
         assert self._state_lock is not None
         async with self._state_lock:
-            if not self._state.get("enabled"):
-                return
             now_local = datetime.now().astimezone()
-            start = _parse_hhmm(self._state.get("active_start"))
-            end = _parse_hhmm(self._state.get("active_end"))
-            if not _within_active_window(now_local, start, end):
+            active = self._active_automation(now_local)
+            if active is None:
                 return
 
             last_action_iso = self._state.get("last_action_at")
@@ -252,12 +362,10 @@ class Thermostat(Generic):
             if not isinstance(temp_c, int | float):
                 return
 
-            on_temp = float(self._state["on_temp_c"])
-            off_temp = float(self._state["off_temp_c"])
+            on_temp = float(active["on_temp_c"])
+            off_temp = float(active["off_temp_c"])
             position = await self._bot.get_position()
 
-            # Cooling: on > off — turn on when hot, off when cool.
-            # Heating: on < off — turn on when cold, off when warm.
             if _mode_from_thresholds(on_temp, off_temp) == "cooling":
                 should_turn_on = temp_c > on_temp
                 should_turn_off = temp_c < off_temp
@@ -302,21 +410,18 @@ class Thermostat(Generic):
             LOGGER.warning("status bot read failed: %s", e)
 
         now_local = datetime.now().astimezone()
-        start = _parse_hhmm(self._state.get("active_start"))
-        end = _parse_hhmm(self._state.get("active_end"))
-        on_temp = self._state.get("on_temp_c")
-        off_temp = self._state.get("off_temp_c")
-        mode = None
-        if isinstance(on_temp, int | float) and isinstance(off_temp, int | float):
-            mode = _mode_from_thresholds(float(on_temp), float(off_temp))
+        active = self._active_automation(now_local)
         return {
-            "enabled": bool(self._state.get("enabled")),
-            "on_temp_c": on_temp,
-            "off_temp_c": off_temp,
-            "mode": mode,
-            "active_start": self._state.get("active_start"),
-            "active_end": self._state.get("active_end"),
-            "within_active_window": _within_active_window(now_local, start, end),
+            "automations": [
+                {
+                    **auto,
+                    "mode": _mode_from_thresholds(
+                        float(auto["on_temp_c"]), float(auto["off_temp_c"])
+                    ),
+                }
+                for auto in self._state.get("automations", [])
+            ],
+            "active_id": active["id"] if active else None,
             "temperature_c": temp_c,
             "humidity_pct": humidity,
             "bot_position": position,
@@ -324,46 +429,78 @@ class Thermostat(Generic):
             "last_action_position": self._state.get("last_action_position"),
         }
 
-    async def _set_enabled(self, enabled: bool) -> dict:
+    async def _add_automation(self, payload: Any) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("automation payload must be an object")
+        # Drop any client-supplied id so we always mint a fresh one.
+        payload = {**payload, "id": _new_id()}
+        automation = _normalize_automation(payload)
         assert self._state_lock is not None
         async with self._state_lock:
-            self._state["enabled"] = bool(enabled)
+            self._state["automations"].append(automation)
             self._save_state()
-        return {"ok": True, "enabled": bool(enabled)}
+        return {"ok": True, "automation": automation}
 
-    async def _set_thresholds(self, on: Any, off: Any) -> dict:
-        if not isinstance(on, int | float) or not isinstance(off, int | float):
-            raise ValueError("`on_c` and `off_c` must be numbers")
-        if float(on) == float(off):
-            raise ValueError(
-                "`on_c` and `off_c` must differ (on > off = cooling, on < off = heating)"
-            )
+    async def _update_automation(self, payload: Any) -> dict:
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise ValueError("`id` is required")
         assert self._state_lock is not None
         async with self._state_lock:
-            self._state["on_temp_c"] = float(on)
-            self._state["off_temp_c"] = float(off)
+            existing = self._find_automation(str(payload["id"]))
+            if existing is None:
+                raise ValueError(f"no automation with id={payload['id']!r}")
+            merged = {**existing, **{k: v for k, v in payload.items() if v is not None}}
+            normalized = _normalize_automation(merged)
+            # Preserve id + position in the list.
+            normalized["id"] = existing["id"]
+            for i, auto in enumerate(self._state["automations"]):
+                if auto["id"] == existing["id"]:
+                    self._state["automations"][i] = normalized
+                    break
             self._save_state()
-        return {
-            "ok": True,
-            "on_temp_c": float(on),
-            "off_temp_c": float(off),
-            "mode": _mode_from_thresholds(float(on), float(off)),
-        }
+        return {"ok": True, "automation": normalized}
 
-    async def _set_active_hours(self, start: Any, end: Any) -> dict:
-        # Both empty/None disables the window (always active).
-        start_norm = None if start in (None, "") else str(start)
-        end_norm = None if end in (None, "") else str(end)
-        _parse_hhmm(start_norm)
-        _parse_hhmm(end_norm)
-        if (start_norm is None) != (end_norm is None):
-            raise ValueError("provide both `active_start` and `active_end`, or neither")
+    async def _delete_automation(self, payload: Any) -> dict:
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise ValueError("`id` is required")
+        aid = str(payload["id"])
         assert self._state_lock is not None
         async with self._state_lock:
-            self._state["active_start"] = start_norm
-            self._state["active_end"] = end_norm
+            before = len(self._state["automations"])
+            self._state["automations"] = [
+                a for a in self._state["automations"] if a.get("id") != aid
+            ]
+            if len(self._state["automations"]) == before:
+                raise ValueError(f"no automation with id={aid!r}")
             self._save_state()
-        return {"ok": True, "active_start": start_norm, "active_end": end_norm}
+        return {"ok": True, "id": aid}
+
+    async def _set_automation_enabled(self, payload: Any) -> dict:
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise ValueError("`id` is required")
+        aid = str(payload["id"])
+        enabled = bool(payload.get("enabled"))
+        assert self._state_lock is not None
+        async with self._state_lock:
+            auto = self._find_automation(aid)
+            if auto is None:
+                raise ValueError(f"no automation with id={aid!r}")
+            auto["enabled"] = enabled
+            self._save_state()
+        return {"ok": True, "id": aid, "enabled": enabled}
+
+    async def _reorder_automations(self, payload: Any) -> dict:
+        if not isinstance(payload, dict) or not isinstance(payload.get("ids"), list):
+            raise ValueError("`ids` must be a list of automation ids")
+        wanted = [str(x) for x in payload["ids"]]
+        assert self._state_lock is not None
+        async with self._state_lock:
+            current = {a["id"]: a for a in self._state["automations"]}
+            if set(wanted) != set(current.keys()):
+                raise ValueError("`ids` must include every existing automation exactly once")
+            self._state["automations"] = [current[aid] for aid in wanted]
+            self._save_state()
+        return {"ok": True, "order": wanted}
 
     async def do_command(
         self,
@@ -375,10 +512,14 @@ class Thermostat(Generic):
         verb = command.get("command")
         if verb == "status":
             return await self._status()
-        if verb == "set_enabled":
-            return await self._set_enabled(bool(command.get("enabled")))
-        if verb == "set_thresholds":
-            return await self._set_thresholds(command.get("on_c"), command.get("off_c"))
-        if verb == "set_active_hours":
-            return await self._set_active_hours(command.get("start"), command.get("end"))
+        if verb == "add_automation":
+            return await self._add_automation(command.get("automation") or command)
+        if verb == "update_automation":
+            return await self._update_automation(command.get("automation") or command)
+        if verb == "delete_automation":
+            return await self._delete_automation(command)
+        if verb == "set_automation_enabled":
+            return await self._set_automation_enabled(command)
+        if verb == "reorder_automations":
+            return await self._reorder_automations(command)
         raise ValueError(f"Unknown command: {verb!r}")
