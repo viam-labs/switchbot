@@ -6,9 +6,9 @@ Models in this module:
 
 | Model | API | Device |
 |---|---|---|
-| `viam-labs:switchbot:bot` | `rdk:component:switch` | SwitchBot Bot (button pusher) |
-| `viam-labs:switchbot:curtain` | `rdk:component:generic` | SwitchBot Curtain (2/3) |
-| `viam-labs:switchbot:meter` | `rdk:component:sensor` | SwitchBot Meter, Meter Plus, and Hub 2's built-in sensor |
+| `viam:switchbot:bot` | `rdk:component:switch` | SwitchBot Bot (button pusher) |
+| `viam:switchbot:curtain` | `rdk:component:generic` | SwitchBot Curtain (2/3) |
+| `viam:switchbot:meter` | `rdk:component:sensor` | SwitchBot Meter, Meter Plus, and Hub 2's built-in sensor |
 
 Cloud control of Bot and Curtain requires a paired **SwitchBot Hub** (Hub Mini, Hub 2, or Hub 3) with Cloud Services enabled.
 
@@ -46,7 +46,7 @@ Example machine config entry:
   "name": "ac_button",
   "namespace": "rdk",
   "type": "switch",
-  "model": "viam-labs:switchbot:bot",
+  "model": "viam:switchbot:bot",
   "attributes": {
     "token": "...",
     "secret": "...",

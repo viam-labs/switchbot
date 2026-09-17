@@ -18,7 +18,7 @@ from .client import SwitchBotClient
 
 
 class Bot(Switch):
-    MODEL: ClassVar[Model] = Model(ModelFamily("viam-labs", "switchbot"), "bot")
+    MODEL: ClassVar[Model] = Model(ModelFamily("viam", "switchbot"), "bot")
 
     def __init__(self, name: str) -> None:
         super().__init__(name)

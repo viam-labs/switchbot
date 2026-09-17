@@ -19,7 +19,7 @@ from .client import SwitchBotClient
 
 
 class Meter(Sensor):
-    MODEL: ClassVar[Model] = Model(ModelFamily("viam-labs", "switchbot"), "meter")
+    MODEL: ClassVar[Model] = Model(ModelFamily("viam", "switchbot"), "meter")
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
