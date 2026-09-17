@@ -189,11 +189,12 @@ Config:
     "meter_name": "room_meter",
     "automations": [
       {
-        "name": "Day",
+        "name": "Weekdays day",
         "on_temp_c": 25,
         "off_temp_c": 22,
         "active_start": "07:00",
-        "active_end": "22:00"
+        "active_end": "22:00",
+        "days_of_week": [0, 1, 2, 3, 4]
       },
       {
         "name": "Night",
@@ -210,8 +211,8 @@ Config:
 ```
 
 - `bot_name` / `meter_name` — resource names of the dependencies (also listed in `depends_on`).
-- `automations` — ordered list. First automation that's enabled AND currently in its active window wins.
-- Each automation: `{name, on_temp_c, off_temp_c, active_start?, active_end?, enabled?}`. Both `active_start` and `active_end` blank = always active. `start > end` wraps midnight.
+- `automations` — ordered list. First automation that's enabled AND currently in its active window (day-of-week + time-of-day) wins.
+- Each automation: `{name, on_temp_c, off_temp_c, active_start?, active_end?, days_of_week?, enabled?}`. Both `active_start` and `active_end` blank = always active. `start > end` wraps midnight. `days_of_week` is a list of ints 0..6 (Mon..Sun); empty or omitted = every day.
 - `poll_interval_sec` (default 60) — how often the loop wakes to check.
 - `cooldown_sec` (default 300) — minimum interval between two Bot presses so an oscillating temperature doesn't cause rapid pressing.
 - Legacy config with top-level `on_temp_c` / `off_temp_c` / `active_start` / `active_end` is auto-migrated to a single automation named "Default" on first load.
