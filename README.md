@@ -87,13 +87,13 @@ Works for the standalone Meter, Meter Plus, and the sensor built into the Hub 2 
 
 Higher-level automation: reads a Meter, presses a Bot when temperature crosses configured thresholds. Runs on the Pi in a background loop so it works 24/7, regardless of whether the dashboard is open.
 
-Semantics (matched to A/C use — Bot pointed at an A/C remote power button):
+Direction is inferred from the relative position of the two thresholds — the same code drives cooling (A/C) and heating (heat pump / space heater).
 
-- Temperature rises **above** `above_temp_c` and the Bot is currently off → press the Bot on.
-- Temperature falls **below** `below_temp_c` and the Bot is currently on → press the Bot off.
+- **Cooling** (`on_temp_c` > `off_temp_c`): press Bot on when temp rises above `on_temp_c`; off when it falls below `off_temp_c`. Example: `on=25, off=22`.
+- **Heating** (`on_temp_c` < `off_temp_c`): press Bot on when temp falls below `on_temp_c`; off when it rises above `off_temp_c`. Example: `on=18, off=21`.
 - Between the two thresholds, do nothing (hysteresis prevents rapid on/off).
 
-Config:
+Config (A/C example):
 
 ```json
 {
@@ -104,8 +104,8 @@ Config:
   "attributes": {
     "bot_name": "ac_bot",
     "meter_name": "room_meter",
-    "above_temp_c": 24,
-    "below_temp_c": 22,
+    "on_temp_c": 25,
+    "off_temp_c": 22,
     "active_start": "07:00",
     "active_end": "22:00",
     "enabled": true,
@@ -116,7 +116,7 @@ Config:
 ```
 
 - `bot_name` / `meter_name` — resource names of the dependencies (also listed in `depends_on`).
-- `above_temp_c` / `below_temp_c` — Celsius. `above` must exceed `below`.
+- `on_temp_c` / `off_temp_c` — Celsius. Must differ; relative order determines direction (cooling vs heating).
 - `active_start` / `active_end` — 24-hour `HH:MM` window when the controller acts. Both blank = always active. `start > end` wraps midnight (e.g. `22:00` → `06:00`).
 - `enabled` — initial master switch state. Can be toggled at runtime via `do_command`.
 - `poll_interval_sec` (default 60) — how often the loop wakes to check.
@@ -136,8 +136,9 @@ Response:
 ```json
 {
   "enabled": true,
-  "above_temp_c": 24.0,
-  "below_temp_c": 22.0,
+  "on_temp_c": 25.0,
+  "off_temp_c": 22.0,
+  "mode": "cooling",
   "active_start": "07:00",
   "active_end": "22:00",
   "within_active_window": true,
@@ -149,14 +150,16 @@ Response:
 }
 ```
 
+`mode` is inferred: `"cooling"` if `on_temp_c > off_temp_c`, `"heating"` otherwise.
+
 `set_enabled` — master on/off:
 ```json
 { "command": "set_enabled", "enabled": false }
 ```
 
-`set_thresholds` — hot-update the on/off temperatures:
+`set_thresholds` — hot-update the on/off temperatures. Swapping which is higher switches modes.
 ```json
-{ "command": "set_thresholds", "above_c": 25, "below_c": 21 }
+{ "command": "set_thresholds", "on_c": 25, "off_c": 21 }
 ```
 
 `set_active_hours` — hot-update the active window (both empty = always active):

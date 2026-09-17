@@ -1,18 +1,23 @@
 """SwitchBot Thermostat controller.
 
-Combines a Switch (typically the `viam:switchbot:bot` pointed at an A/C
+Combines a Switch (typically the `viam:switchbot:bot` pointed at a
 remote) with a Sensor (typically the `viam:switchbot:meter` reading
 room temperature) into a temperature-triggered automation. The
 controller polls the meter on an interval and presses the switch when
 the reading crosses configured thresholds.
 
-Semantics (matched to A/C usage):
-  - When temperature rises above `above_temp_c` and the switch is
-    currently off (position 0), set position 1 (turnOn).
-  - When temperature falls below `below_temp_c` and the switch is
-    currently on (position 1), set position 0 (turnOff).
-  - Between the two thresholds, do nothing (hysteresis prevents
-    rapid on/off oscillation).
+Direction is inferred from the relative position of the two
+thresholds so the same code drives both A/C and heat:
+
+  - Cooling (A/C): `on_temp_c` > `off_temp_c` — turn on when temp
+    rises above `on_temp_c`; turn off when it falls below `off_temp_c`.
+    Example: on=25, off=22.
+  - Heating: `on_temp_c` < `off_temp_c` — turn on when temp falls
+    below `on_temp_c`; turn off when it rises above `off_temp_c`.
+    Example: on=18, off=21.
+
+Between the two thresholds nothing happens (hysteresis prevents rapid
+on/off oscillation).
 
 Master switch (`enabled`) and active-hours window (`active_start`,
 `active_end`) can be toggled at runtime via do_command; runtime
@@ -23,7 +28,8 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, time as time_of_day
+from datetime import UTC, datetime
+from datetime import time as time_of_day
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -43,11 +49,16 @@ DEFAULT_POLL_INTERVAL_SEC = 60
 DEFAULT_COOLDOWN_SEC = 300
 
 
+def _mode_from_thresholds(on_temp_c: float, off_temp_c: float) -> str:
+    """'cooling' when on > off, 'heating' when on < off."""
+    return "cooling" if on_temp_c > off_temp_c else "heating"
+
+
 def _empty_state() -> dict:
     return {
         "enabled": True,
-        "above_temp_c": None,
-        "below_temp_c": None,
+        "on_temp_c": None,
+        "off_temp_c": None,
         "active_start": None,
         "active_end": None,
         "last_action_at": None,
@@ -113,14 +124,17 @@ class Thermostat(Generic):
         for field in ("bot_name", "meter_name"):
             if not attrs.get(field):
                 raise ValueError(f"`{field}` is required")
-        for field in ("above_temp_c", "below_temp_c"):
+        for field in ("on_temp_c", "off_temp_c"):
             value = attrs.get(field)
             if value is None:
                 raise ValueError(f"`{field}` is required")
             if not isinstance(value, int | float) or isinstance(value, bool):
                 raise ValueError(f"`{field}` must be a number")
-        if float(attrs["above_temp_c"]) <= float(attrs["below_temp_c"]):
-            raise ValueError("`above_temp_c` must be greater than `below_temp_c`")
+        if float(attrs["on_temp_c"]) == float(attrs["off_temp_c"]):
+            raise ValueError(
+                "`on_temp_c` and `off_temp_c` must differ "
+                "(on > off = cooling, on < off = heating)"
+            )
         for field in ("active_start", "active_end"):
             _parse_hhmm(attrs.get(field))
         # Return the depends_on names so Viam brings them up first.
@@ -157,10 +171,10 @@ class Thermostat(Generic):
         loaded = self._load_state()
         self._state = _empty_state()
         self._state.update({k: v for k, v in loaded.items() if k in self._state})
-        if self._state["above_temp_c"] is None:
-            self._state["above_temp_c"] = float(attrs["above_temp_c"])
-        if self._state["below_temp_c"] is None:
-            self._state["below_temp_c"] = float(attrs["below_temp_c"])
+        if self._state["on_temp_c"] is None:
+            self._state["on_temp_c"] = float(attrs["on_temp_c"])
+        if self._state["off_temp_c"] is None:
+            self._state["off_temp_c"] = float(attrs["off_temp_c"])
         if self._state["active_start"] is None:
             self._state["active_start"] = attrs.get("active_start") or None
         if self._state["active_end"] is None:
@@ -238,14 +252,23 @@ class Thermostat(Generic):
             if not isinstance(temp_c, int | float):
                 return
 
-            above = float(self._state["above_temp_c"])
-            below = float(self._state["below_temp_c"])
+            on_temp = float(self._state["on_temp_c"])
+            off_temp = float(self._state["off_temp_c"])
             position = await self._bot.get_position()
 
-            if temp_c > above and position == 0:
+            # Cooling: on > off — turn on when hot, off when cool.
+            # Heating: on < off — turn on when cold, off when warm.
+            if _mode_from_thresholds(on_temp, off_temp) == "cooling":
+                should_turn_on = temp_c > on_temp
+                should_turn_off = temp_c < off_temp
+            else:
+                should_turn_on = temp_c < on_temp
+                should_turn_off = temp_c > off_temp
+
+            if should_turn_on and position == 0:
                 await self._bot.set_position(1)
                 self._record_action(1)
-            elif temp_c < below and position == 1:
+            elif should_turn_off and position == 1:
                 await self._bot.set_position(0)
                 self._record_action(0)
 
@@ -281,10 +304,16 @@ class Thermostat(Generic):
         now_local = datetime.now().astimezone()
         start = _parse_hhmm(self._state.get("active_start"))
         end = _parse_hhmm(self._state.get("active_end"))
+        on_temp = self._state.get("on_temp_c")
+        off_temp = self._state.get("off_temp_c")
+        mode = None
+        if isinstance(on_temp, int | float) and isinstance(off_temp, int | float):
+            mode = _mode_from_thresholds(float(on_temp), float(off_temp))
         return {
             "enabled": bool(self._state.get("enabled")),
-            "above_temp_c": self._state.get("above_temp_c"),
-            "below_temp_c": self._state.get("below_temp_c"),
+            "on_temp_c": on_temp,
+            "off_temp_c": off_temp,
+            "mode": mode,
             "active_start": self._state.get("active_start"),
             "active_end": self._state.get("active_end"),
             "within_active_window": _within_active_window(now_local, start, end),
@@ -302,17 +331,24 @@ class Thermostat(Generic):
             self._save_state()
         return {"ok": True, "enabled": bool(enabled)}
 
-    async def _set_thresholds(self, above: Any, below: Any) -> dict:
-        if not isinstance(above, int | float) or not isinstance(below, int | float):
-            raise ValueError("`above_c` and `below_c` must be numbers")
-        if float(above) <= float(below):
-            raise ValueError("`above_c` must be greater than `below_c`")
+    async def _set_thresholds(self, on: Any, off: Any) -> dict:
+        if not isinstance(on, int | float) or not isinstance(off, int | float):
+            raise ValueError("`on_c` and `off_c` must be numbers")
+        if float(on) == float(off):
+            raise ValueError(
+                "`on_c` and `off_c` must differ (on > off = cooling, on < off = heating)"
+            )
         assert self._state_lock is not None
         async with self._state_lock:
-            self._state["above_temp_c"] = float(above)
-            self._state["below_temp_c"] = float(below)
+            self._state["on_temp_c"] = float(on)
+            self._state["off_temp_c"] = float(off)
             self._save_state()
-        return {"ok": True, "above_temp_c": float(above), "below_temp_c": float(below)}
+        return {
+            "ok": True,
+            "on_temp_c": float(on),
+            "off_temp_c": float(off),
+            "mode": _mode_from_thresholds(float(on), float(off)),
+        }
 
     async def _set_active_hours(self, start: Any, end: Any) -> dict:
         # Both empty/None disables the window (always active).
@@ -342,7 +378,7 @@ class Thermostat(Generic):
         if verb == "set_enabled":
             return await self._set_enabled(bool(command.get("enabled")))
         if verb == "set_thresholds":
-            return await self._set_thresholds(command.get("above_c"), command.get("below_c"))
+            return await self._set_thresholds(command.get("on_c"), command.get("off_c"))
         if verb == "set_active_hours":
             return await self._set_active_hours(command.get("start"), command.get("end"))
         raise ValueError(f"Unknown command: {verb!r}")
