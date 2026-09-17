@@ -9,7 +9,6 @@ import hmac
 import httpx
 import pytest
 import respx
-
 from switchbot_module.client import BASE_URL, SwitchBotClient, SwitchBotError
 
 
@@ -80,6 +79,7 @@ async def test_send_command_posts_expected_body():
         )
         await client.send_command("ABC", "setPosition", parameter="0,ff,50")
     import json as _json
+
     sent = _json.loads(route.calls.last.request.content)
     assert sent == {"command": "setPosition", "parameter": "0,ff,50", "commandType": "command"}
     await client.close()

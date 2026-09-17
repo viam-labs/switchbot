@@ -11,7 +11,8 @@ import hashlib
 import hmac
 import time
 import uuid
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import httpx
 
@@ -32,9 +33,7 @@ class SwitchBotClient:
         t = str(int(time.time() * 1000))
         nonce = str(uuid.uuid4())
         payload = f"{self._token}{t}{nonce}".encode()
-        sign = base64.b64encode(
-            hmac.new(self._secret, payload, hashlib.sha256).digest()
-        ).decode()
+        sign = base64.b64encode(hmac.new(self._secret, payload, hashlib.sha256).digest()).decode()
         return {
             "Authorization": self._token,
             "sign": sign,

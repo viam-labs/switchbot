@@ -5,7 +5,8 @@ sensor uses the same /devices/{id}/status response shape, so the same
 model backs both.
 """
 
-from typing import Any, ClassVar, Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any, ClassVar
 
 from viam.components.sensor import Sensor
 from viam.proto.app.robot import ComponentConfig
@@ -22,7 +23,7 @@ class Meter(Sensor):
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
-        self._client: Optional[SwitchBotClient] = None
+        self._client: SwitchBotClient | None = None
         self._device_id: str = ""
 
     @classmethod
@@ -55,8 +56,8 @@ class Meter(Sensor):
     async def get_readings(
         self,
         *,
-        extra: Optional[Mapping[str, Any]] = None,
-        timeout: Optional[float] = None,
+        extra: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
         **kwargs,
     ) -> Mapping[str, Any]:
         assert self._client is not None

@@ -4,7 +4,8 @@ Position 0 = off (turnOff), position 1 = on (turnOn). The Bot is a
 two-position switch; number_of_positions is always 2.
 """
 
-from typing import ClassVar, Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import ClassVar
 
 from viam.components.switch import Switch
 from viam.proto.app.robot import ComponentConfig
@@ -21,7 +22,7 @@ class Bot(Switch):
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
-        self._client: Optional[SwitchBotClient] = None
+        self._client: SwitchBotClient | None = None
         self._device_id: str = ""
 
     @classmethod

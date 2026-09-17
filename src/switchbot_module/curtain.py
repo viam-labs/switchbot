@@ -5,7 +5,8 @@ Position uses SwitchBot's "setPosition" with parameter "0,ff,{n}" where
 n is percent 0..100 (0 = fully open, 100 = fully closed).
 """
 
-from typing import Any, ClassVar, Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any, ClassVar
 
 from viam.components.generic import Generic
 from viam.proto.app.robot import ComponentConfig
@@ -22,7 +23,7 @@ class Curtain(Generic):
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
-        self._client: Optional[SwitchBotClient] = None
+        self._client: SwitchBotClient | None = None
         self._device_id: str = ""
 
     @classmethod
@@ -53,7 +54,7 @@ class Curtain(Generic):
         self._device_id = attrs["device_id"]
 
     async def do_command(
-        self, command: Mapping[str, Any], *, timeout: Optional[float] = None, **kwargs
+        self, command: Mapping[str, Any], *, timeout: float | None = None, **kwargs
     ) -> Mapping[str, Any]:
         assert self._client is not None
         verb = command.get("command")
