@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging output
+module.tar.gz
+
+# Env / secrets
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/

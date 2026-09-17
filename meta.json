@@ -1,0 +1,25 @@
+{
+    "module_id": "viam-labs:switchbot",
+    "visibility": "public",
+    "url": "https://github.com/viam-labs/switchbot",
+    "description": "Control SwitchBot devices (Bot, Curtain, Meter) via the SwitchBot OpenAPI v1.1.",
+    "models": [
+        {
+            "api": "rdk:component:switch",
+            "model": "viam-labs:switchbot:bot",
+            "markdown_link": "README.md#bot"
+        },
+        {
+            "api": "rdk:component:generic",
+            "model": "viam-labs:switchbot:curtain",
+            "markdown_link": "README.md#curtain"
+        },
+        {
+            "api": "rdk:component:sensor",
+            "model": "viam-labs:switchbot:meter",
+            "markdown_link": "README.md#meter"
+        }
+    ],
+    "entrypoint": "run.sh",
+    "first_run": ""
+}
