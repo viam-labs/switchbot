@@ -70,7 +70,9 @@ Extra `do_command` verbs:
 
 ### Curtain
 
-Uses `rdk:component:generic` — control it through `DoCommand`:
+Uses `rdk:component:generic` — control it through `DoCommand`.
+
+Manual verbs:
 
 | `command` | Extra fields | Effect |
 |---|---|---|
@@ -78,7 +80,77 @@ Uses `rdk:component:generic` — control it through `DoCommand`:
 | `close` | — | Curtain fully closes |
 | `pause` | — | Stops mid-travel |
 | `set_position` | `position` (0-100) | Move to percentage (0 = fully open, 100 = fully closed) |
-| `status` (alias `get_status`) | — | Returns `{ slide_position, battery, moving, calibrate, raw }` |
+| `status` (alias `get_status`) | — | Returns `{ slide_position, battery, moving, calibrate, schedules, raw }` |
+
+Optional config attributes:
+
+```json
+{
+  "poll_interval_sec": 30,
+  "schedules": [
+    {
+      "name": "Morning open",
+      "action": "open",
+      "time": "07:30",
+      "days_of_week": [0, 1, 2, 3, 4],
+      "enabled": true
+    }
+  ]
+}
+```
+
+- `poll_interval_sec` (default 30) — how often the background loop checks if any schedule is due.
+- `schedules` — optional seed list; only used when the state file is empty. Runtime edits via `do_command` become the source of truth. Runtime state persists to `~/.viam/switchbot-curtain-<name>-state.json`.
+
+Each schedule:
+- `id` — assigned automatically.
+- `name` — display label.
+- `action` — `open`, `close`, or `position`.
+- `position` — required only when `action` is `position` (0-100, SwitchBot semantics).
+- `time` — `HH:MM` local time.
+- `days_of_week` — list of ints 0..6 (Mon..Sun). Empty = every day.
+- `enabled` — boolean.
+
+The background loop fires each schedule at most once per day: it compares `last_fired_at` to today's scheduled moment and only fires when today's window has arrived and hasn't been claimed yet.
+
+Scheduling verbs:
+
+`add_schedule`:
+```json
+{
+  "command": "add_schedule",
+  "schedule": {
+    "name": "Bedtime close",
+    "action": "close",
+    "time": "22:00",
+    "days_of_week": [],
+    "enabled": true
+  }
+}
+```
+
+`update_schedule` (any field except `id`):
+```json
+{
+  "command": "update_schedule",
+  "schedule": { "id": "a1b2c3d4", "time": "22:30" }
+}
+```
+
+`delete_schedule`:
+```json
+{ "command": "delete_schedule", "id": "a1b2c3d4" }
+```
+
+`set_schedule_enabled`:
+```json
+{ "command": "set_schedule_enabled", "id": "a1b2c3d4", "enabled": false }
+```
+
+`reorder_schedules` — `ids` must include every existing schedule exactly once:
+```json
+{ "command": "reorder_schedules", "ids": ["a1b2c3d4", "e5f6g7h8"] }
+```
 
 ### Meter
 
