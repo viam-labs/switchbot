@@ -367,11 +367,11 @@ class Thermostat(Generic):
             position = await self._bot.get_position()
 
             if _mode_from_thresholds(on_temp, off_temp) == "cooling":
-                should_turn_on = temp_c > on_temp
-                should_turn_off = temp_c < off_temp
+                should_turn_on = temp_c >= on_temp
+                should_turn_off = temp_c <= off_temp
             else:
-                should_turn_on = temp_c < on_temp
-                should_turn_off = temp_c > off_temp
+                should_turn_on = temp_c <= on_temp
+                should_turn_off = temp_c >= off_temp
 
             if should_turn_on and position == 0:
                 await self._bot.set_position(1)

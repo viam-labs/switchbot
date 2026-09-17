@@ -100,9 +100,9 @@ Higher-level automation: reads a Meter, presses a Bot when temperature crosses c
 
 Threshold direction is inferred per-automation from the relative position of the two values:
 
-- **Cooling** (`on_temp_c` > `off_temp_c`): press Bot on when temp rises above `on_temp_c`; off when it falls below `off_temp_c`. Example: `on=25, off=22`.
-- **Heating** (`on_temp_c` < `off_temp_c`): press Bot on when temp falls below `on_temp_c`; off when it rises above `off_temp_c`. Example: `on=18, off=21`.
-- Between the two thresholds, nothing happens (hysteresis).
+- **Cooling** (`on_temp_c` > `off_temp_c`): press Bot on when temp reaches `on_temp_c` or higher; off when it reaches `off_temp_c` or lower. Example: `on=25, off=22`.
+- **Heating** (`on_temp_c` < `off_temp_c`): press Bot on when temp reaches `on_temp_c` or lower; off when it reaches `off_temp_c` or higher. Example: `on=18, off=21`.
+- Thresholds are inclusive so hitting the setpoint exactly triggers a press. Between the two thresholds, nothing happens (hysteresis).
 
 Config:
 
