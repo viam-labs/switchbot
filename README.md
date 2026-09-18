@@ -211,11 +211,14 @@ Config:
 ```
 
 - `bot_name` / `meter_name` — resource names of the dependencies (also listed in `depends_on`).
-- `automations` — ordered list. First automation that's enabled AND currently in its active window (day-of-week + time-of-day) wins.
-- Each automation: `{name, on_temp_c, off_temp_c, active_start?, active_end?, days_of_week?, enabled?}`. Both `active_start` and `active_end` blank = always active. `start > end` wraps midnight. `days_of_week` is a list of ints 0..6 (Mon..Sun); empty or omitted = every day.
+- `automations` — ordered list. Two `kind`s:
+  - `hysteresis` (default): temp thresholds + optional active window. First enabled hysteresis in its window wins.
+  - `scheduled`: one-shot press at a time on selected days. Fires once per day and coexists with hysteresis (respects `cooldown_sec`).
+- Hysteresis fields: `{name, kind?, on_temp_c, off_temp_c, active_start?, active_end?, days_of_week?, enabled?}`. Both `active_start` and `active_end` blank = always active. `start > end` wraps midnight. `days_of_week` is a list of ints 0..6 (Mon..Sun); empty or omitted = every day.
+- Scheduled fields: `{name, kind: "scheduled", action: "on"|"off", time: "HH:MM", days_of_week?, enabled?}`.
 - `poll_interval_sec` (default 60) — how often the loop wakes to check.
 - `cooldown_sec` (default 300) — minimum interval between two Bot presses so an oscillating temperature doesn't cause rapid pressing.
-- Legacy config with top-level `on_temp_c` / `off_temp_c` / `active_start` / `active_end` is auto-migrated to a single automation named "Default" on first load.
+- Legacy config with top-level `on_temp_c` / `off_temp_c` / `active_start` / `active_end` is auto-migrated to a single hysteresis automation named "Default" on first load.
 
 Runtime state (the automations list, their enabled flags, their order, plus last-action metadata) is persisted to `~/.viam/switchbot-thermostat-<name>-state.json`. Runtime edits via `do_command` become the source of truth; config values only seed an empty state file on first run.
 
@@ -234,12 +237,23 @@ Response:
     {
       "id": "a1b2c3d4",
       "name": "Day",
+      "kind": "hysteresis",
       "enabled": true,
       "on_temp_c": 25.0,
       "off_temp_c": 22.0,
       "active_start": "07:00",
       "active_end": "22:00",
       "mode": "cooling"
+    },
+    {
+      "id": "e5f6g7h8",
+      "name": "Morning off",
+      "kind": "scheduled",
+      "enabled": true,
+      "action": "off",
+      "time": "07:00",
+      "days_of_week": [0, 1, 2, 3, 4],
+      "last_fired_at": "2026-09-18T11:00:00+00:00"
     }
   ],
   "active_id": "a1b2c3d4",
@@ -251,16 +265,32 @@ Response:
 }
 ```
 
-`add_automation` — appends a new automation:
+`add_automation` — appends a new automation. Hysteresis:
 ```json
 {
   "command": "add_automation",
   "automation": {
     "name": "Night",
+    "kind": "hysteresis",
     "on_temp_c": 26,
     "off_temp_c": 24,
     "active_start": "22:00",
     "active_end": "07:00",
+    "enabled": true
+  }
+}
+```
+
+Scheduled:
+```json
+{
+  "command": "add_automation",
+  "automation": {
+    "name": "Morning off",
+    "kind": "scheduled",
+    "action": "off",
+    "time": "07:00",
+    "days_of_week": [0, 1, 2, 3, 4],
     "enabled": true
   }
 }

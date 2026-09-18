@@ -108,35 +108,73 @@ def _empty_state() -> dict:
 
 
 def _normalize_automation(raw: dict, default_enabled: bool = True) -> dict:
-    """Coerce an automation dict into the canonical shape."""
-    if "on_temp_c" not in raw or "off_temp_c" not in raw:
-        raise ValueError("automation must include `on_temp_c` and `off_temp_c`")
-    on_temp = raw["on_temp_c"]
-    off_temp = raw["off_temp_c"]
-    if not isinstance(on_temp, int | float) or isinstance(on_temp, bool):
-        raise ValueError("`on_temp_c` must be a number")
-    if not isinstance(off_temp, int | float) or isinstance(off_temp, bool):
-        raise ValueError("`off_temp_c` must be a number")
-    if float(on_temp) == float(off_temp):
-        raise ValueError(
-            "`on_temp_c` and `off_temp_c` must differ " "(on > off = cooling, on < off = heating)"
-        )
-    active_start = raw.get("active_start") or None
-    active_end = raw.get("active_end") or None
-    _parse_hhmm(active_start)
-    _parse_hhmm(active_end)
-    if (active_start is None) != (active_end is None):
-        raise ValueError("provide both `active_start` and `active_end`, or neither")
-    return {
+    """Coerce an automation dict into the canonical shape.
+
+    Two kinds: 'hysteresis' (temp thresholds + active window) and
+    'scheduled' (one-shot fire at a time + days). Missing `kind`
+    defaults to 'hysteresis' for backward compat with older configs.
+    """
+    kind = raw.get("kind") or "hysteresis"
+    if kind not in ("hysteresis", "scheduled"):
+        raise ValueError(f"unknown automation `kind`: {kind!r}")
+    common = {
         "id": raw.get("id") or _new_id(),
-        "name": str(raw.get("name") or "Default"),
+        "name": str(raw.get("name") or "Automation"),
+        "kind": kind,
         "enabled": bool(raw.get("enabled", default_enabled)),
-        "on_temp_c": float(on_temp),
-        "off_temp_c": float(off_temp),
-        "active_start": active_start,
-        "active_end": active_end,
         "days_of_week": _normalize_days(raw.get("days_of_week")),
     }
+    if kind == "hysteresis":
+        if "on_temp_c" not in raw or "off_temp_c" not in raw:
+            raise ValueError("hysteresis automation must include `on_temp_c` and `off_temp_c`")
+        on_temp = raw["on_temp_c"]
+        off_temp = raw["off_temp_c"]
+        if not isinstance(on_temp, int | float) or isinstance(on_temp, bool):
+            raise ValueError("`on_temp_c` must be a number")
+        if not isinstance(off_temp, int | float) or isinstance(off_temp, bool):
+            raise ValueError("`off_temp_c` must be a number")
+        if float(on_temp) == float(off_temp):
+            raise ValueError(
+                "`on_temp_c` and `off_temp_c` must differ "
+                "(on > off = cooling, on < off = heating)"
+            )
+        active_start = raw.get("active_start") or None
+        active_end = raw.get("active_end") or None
+        _parse_hhmm(active_start)
+        _parse_hhmm(active_end)
+        if (active_start is None) != (active_end is None):
+            raise ValueError("provide both `active_start` and `active_end`, or neither")
+        return {
+            **common,
+            "on_temp_c": float(on_temp),
+            "off_temp_c": float(off_temp),
+            "active_start": active_start,
+            "active_end": active_end,
+        }
+    # kind == "scheduled"
+    action = raw.get("action")
+    if action not in ("on", "off"):
+        raise ValueError("scheduled automation `action` must be 'on' or 'off'")
+    time_str = raw.get("time")
+    if _parse_hhmm(time_str) is None:
+        raise ValueError("scheduled automation `time` (HH:MM) is required")
+    return {
+        **common,
+        "action": action,
+        "time": time_str,
+        "last_fired_at": raw.get("last_fired_at"),
+    }
+
+
+def _automation_view(auto: dict) -> dict:
+    kind = auto.get("kind") or "hysteresis"
+    if kind == "hysteresis":
+        return {
+            **auto,
+            "kind": "hysteresis",
+            "mode": _mode_from_thresholds(float(auto["on_temp_c"]), float(auto["off_temp_c"])),
+        }
+    return {**auto, "kind": "scheduled"}
 
 
 def _migrate_legacy_state(loaded: dict) -> dict:
@@ -328,8 +366,10 @@ class Thermostat(Generic):
                 return auto
         return None
 
-    def _active_automation(self, now_local: datetime) -> dict | None:
+    def _active_hysteresis(self, now_local: datetime) -> dict | None:
         for auto in self._state.get("automations", []):
+            if (auto.get("kind") or "hysteresis") != "hysteresis":
+                continue
             if not auto.get("enabled"):
                 continue
             days = auto.get("days_of_week") or []
@@ -340,6 +380,16 @@ class Thermostat(Generic):
             if _within_active_window(now_local, start, end):
                 return auto
         return None
+
+    def _within_cooldown(self, now_utc: datetime) -> bool:
+        last_iso = self._state.get("last_action_at")
+        if not last_iso:
+            return False
+        try:
+            last_dt = datetime.fromisoformat(last_iso)
+        except ValueError:
+            return False
+        return (now_utc - last_dt).total_seconds() < self._cooldown_sec
 
     # ------------------------------------------------------------------
     # Background loop
@@ -358,20 +408,16 @@ class Thermostat(Generic):
         assert self._state_lock is not None
         async with self._state_lock:
             now_local = datetime.now().astimezone()
-            active = self._active_automation(now_local)
-            if active is None:
+
+            if await self._fire_due_scheduled(now_local):
                 return
 
-            last_action_iso = self._state.get("last_action_at")
-            if last_action_iso:
-                try:
-                    last_dt = datetime.fromisoformat(last_action_iso)
-                except ValueError:
-                    last_dt = None
-                if last_dt is not None:
-                    elapsed = (datetime.now(UTC) - last_dt).total_seconds()
-                    if elapsed < self._cooldown_sec:
-                        return
+            if self._within_cooldown(datetime.now(UTC)):
+                return
+
+            active = self._active_hysteresis(now_local)
+            if active is None:
+                return
 
             readings = await self._meter.get_readings()
             temp_c = None
@@ -397,6 +443,55 @@ class Thermostat(Generic):
             elif should_turn_off and position == 1:
                 await self._bot.set_position(0)
                 self._record_action(0)
+
+    async def _fire_due_scheduled(self, now_local: datetime) -> bool:
+        """Fire any scheduled automation whose moment has arrived today.
+
+        Returns True if a press happened (bot needed to change position).
+        Even when the bot was already at the target position, `last_fired_at`
+        is stamped so we don't re-consider the same schedule until tomorrow.
+        """
+        now_utc = datetime.now(UTC)
+        for auto in self._state.get("automations", []):
+            if auto.get("kind") != "scheduled":
+                continue
+            if not auto.get("enabled"):
+                continue
+            days = auto.get("days_of_week") or []
+            if days and now_local.weekday() not in days:
+                continue
+            t = _parse_hhmm(auto.get("time"))
+            if t is None:
+                continue
+            fire_today = now_local.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+            if now_local < fire_today:
+                continue
+            last_iso = auto.get("last_fired_at")
+            if last_iso:
+                try:
+                    last = datetime.fromisoformat(last_iso).astimezone(now_local.tzinfo)
+                    if last >= fire_today:
+                        continue
+                except ValueError:
+                    pass
+            target = 1 if auto["action"] == "on" else 0
+            pressed = False
+            try:
+                position = await self._bot.get_position()
+                if position != target:
+                    if self._within_cooldown(now_utc):
+                        continue
+                    await self._bot.set_position(target)
+                    self._record_action(target)
+                    pressed = True
+            except Exception as e:
+                LOGGER.warning("scheduled automation %s fire failed: %s", auto.get("id"), e)
+                continue
+            auto["last_fired_at"] = now_utc.isoformat()
+            self._save_state()
+            if pressed:
+                return True
+        return False
 
     def _record_action(self, position: int) -> None:
         self._state["last_action_at"] = datetime.now(UTC).isoformat()
@@ -428,17 +523,9 @@ class Thermostat(Generic):
             LOGGER.warning("status bot read failed: %s", e)
 
         now_local = datetime.now().astimezone()
-        active = self._active_automation(now_local)
+        active = self._active_hysteresis(now_local)
         return {
-            "automations": [
-                {
-                    **auto,
-                    "mode": _mode_from_thresholds(
-                        float(auto["on_temp_c"]), float(auto["off_temp_c"])
-                    ),
-                }
-                for auto in self._state.get("automations", [])
-            ],
+            "automations": [_automation_view(auto) for auto in self._state.get("automations", [])],
             "active_id": active["id"] if active else None,
             "temperature_c": temp_c,
             "humidity_pct": humidity,
