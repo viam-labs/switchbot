@@ -9,6 +9,7 @@ Models in this module:
 | `viam:switchbot:bot` | `rdk:component:switch` | SwitchBot Bot (button pusher) |
 | `viam:switchbot:curtain` | `rdk:component:generic` | SwitchBot Curtain (2/3) |
 | `viam:switchbot:meter` | `rdk:component:sensor` | SwitchBot Meter, Meter Plus, and Hub 2's built-in sensor |
+| `viam:switchbot:door-unlock` | `rdk:component:generic` | SwitchBot Bot on an intercom's unlock button |
 
 Cloud control of Bot and Curtain requires a paired **SwitchBot Hub** (Hub Mini, Hub 2, or Hub 3) with Cloud Services enabled.
 
@@ -318,6 +319,37 @@ Scheduled:
 ```json
 { "command": "reorder_automations", "ids": ["a1b2c3d4", "e5f6g7h8"] }
 ```
+
+### Door Unlock
+
+Uses `rdk:component:generic`. Wraps a SwitchBot Bot mounted on an intercom's unlock button. Configure the Bot in **Press Mode** via the SwitchBot app so a single API call does a tap.
+
+Config:
+
+```json
+{
+  "name": "building_door",
+  "type": "generic",
+  "model": "viam:switchbot:door-unlock",
+  "attributes": {
+    "token": "...",
+    "secret": "...",
+    "device_id": "...",
+    "hold_ms": 500
+  }
+}
+```
+
+- `hold_ms` (default 500) — reserved for future turnOn/turnOff style if a user's bot is in Switch mode. Press mode ignores it.
+
+State (`last_opened_at`) persists to `~/.viam/switchbot-door-unlock-<name>-state.json`.
+
+Commands:
+
+| `command` | Effect |
+|---|---|
+| `status` | Returns `{ kind: "door_unlock", last_opened_at, battery, hold_ms, ready }` |
+| `unlock` | Sends SwitchBot `press`; stamps `last_opened_at` |
 
 ## Development
 
