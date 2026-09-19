@@ -26,8 +26,8 @@
         },
         {
             "api": "rdk:component:generic",
-            "model": "viam:switchbot:door-unlock",
-            "markdown_link": "README.md#door-unlock"
+            "model": "viam:switchbot:clicker",
+            "markdown_link": "README.md#clicker"
         }
     ],
     "entrypoint": "run.sh",

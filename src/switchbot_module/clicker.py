@@ -1,12 +1,17 @@
-"""SwitchBot Door Unlock — press a Bot mounted on an intercom's unlock button.
+"""SwitchBot Clicker — a Bot in Press mode exposed as a momentary tap.
 
 DoCommand verbs:
-- status  → {kind, last_opened_at, battery, hold_ms, ready}
-- unlock  → press the Bot (SwitchBot `press` command). Stamps last_opened_at.
+- status → {kind, last_clicked_at, battery, hold_ms, ready}
+- click  → send SwitchBot `press`; stamps last_clicked_at.
 
-Bot should be configured in "Press Mode" via the SwitchBot app so `press`
-does a quick tap. `hold_ms` is reserved for a future turnOn/turnOff style
-if a user's bot is in switch mode; press mode ignores it.
+Bot should be configured in Press Mode via the SwitchBot app so a
+single `press` call does a tap. `hold_ms` is reserved for a future
+turnOn/turnOff style if a bot is in Switch mode; Press mode ignores
+it.
+
+Deliberately generic — the meaning of the click (door intercom,
+doorbell, garage remote) is a concern for whatever frontend wraps
+it, not this module.
 """
 
 import asyncio
@@ -28,12 +33,12 @@ from .client import SwitchBotClient
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_STATE_PATH = "~/.viam/switchbot-door-unlock-{name}-state.json"
+DEFAULT_STATE_PATH = "~/.viam/switchbot-clicker-{name}-state.json"
 DEFAULT_HOLD_MS = 500
 
 
-class DoorUnlock(Generic):
-    MODEL: ClassVar[Model] = Model(ModelFamily("viam", "switchbot"), "door-unlock")
+class Clicker(Generic):
+    MODEL: ClassVar[Model] = Model(ModelFamily("viam", "switchbot"), "clicker")
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
@@ -41,7 +46,7 @@ class DoorUnlock(Generic):
         self._device_id: str = ""
         self._hold_ms: int = DEFAULT_HOLD_MS
         self._state_path: str = ""
-        self._state: dict = {"last_opened_at": None}
+        self._state: dict = {"last_clicked_at": None}
         self._state_lock: asyncio.Lock | None = None
 
     @classmethod
@@ -49,7 +54,7 @@ class DoorUnlock(Generic):
         cls,
         config: ComponentConfig,
         dependencies: Mapping[ResourceName, ResourceBase],
-    ) -> "DoorUnlock":
+    ) -> "Clicker":
         c = cls(config.name)
         c.reconfigure(config, dependencies)
         return c
@@ -86,13 +91,13 @@ class DoorUnlock(Generic):
     def _load_state(self) -> dict:
         path = Path(self._state_path).expanduser()
         if not path.exists():
-            return {"last_opened_at": None}
+            return {"last_clicked_at": None}
         try:
             loaded = json.loads(path.read_text())
-            return {"last_opened_at": loaded.get("last_opened_at")}
+            return {"last_clicked_at": loaded.get("last_clicked_at")}
         except Exception as e:
-            LOGGER.warning("failed to load door-unlock state from %s: %s", path, e)
-            return {"last_opened_at": None}
+            LOGGER.warning("failed to load clicker state from %s: %s", path, e)
+            return {"last_clicked_at": None}
 
     def _save_state(self) -> None:
         path = Path(self._state_path).expanduser()
@@ -109,24 +114,24 @@ class DoorUnlock(Generic):
             if isinstance(raw, dict):
                 battery = raw.get("battery")
         except Exception as e:
-            LOGGER.warning("door-unlock status battery read failed: %s", e)
+            LOGGER.warning("clicker status battery read failed: %s", e)
         return {
-            "kind": "door_unlock",
-            "last_opened_at": self._state.get("last_opened_at"),
+            "kind": "clicker",
+            "last_clicked_at": self._state.get("last_clicked_at"),
             "battery": battery,
             "hold_ms": self._hold_ms,
             "ready": True,
         }
 
-    async def _unlock(self) -> dict:
+    async def _click(self) -> dict:
         assert self._client is not None
         assert self._state_lock is not None
         await self._client.send_command(self._device_id, "press")
         fired_at = datetime.now(UTC).isoformat()
         async with self._state_lock:
-            self._state["last_opened_at"] = fired_at
+            self._state["last_clicked_at"] = fired_at
             self._save_state()
-        return {"ok": True, "last_opened_at": fired_at}
+        return {"ok": True, "last_clicked_at": fired_at}
 
     async def do_command(
         self,
@@ -138,6 +143,6 @@ class DoorUnlock(Generic):
         verb = command.get("command")
         if verb == "status":
             return await self._status()
-        if verb == "unlock":
-            return await self._unlock()
+        if verb == "click":
+            return await self._click()
         raise ValueError(f"unknown command: {verb!r}")
