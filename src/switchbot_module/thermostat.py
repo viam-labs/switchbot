@@ -86,16 +86,30 @@ def _new_id() -> str:
 
 
 def _normalize_days(days: Any) -> list[int]:
-    """Validate + dedupe 0..6 weekdays (Mon..Sun). Empty = every day."""
+    """Validate + dedupe 0..6 weekdays (Mon..Sun). Empty = every day.
+
+    Viam serializes numeric config fields through protobuf's Value
+    type, which stores everything as double — so `[0, 1, 2]` from the
+    frontend arrives as `[0.0, 1.0, 2.0]`. Accept int-valued floats
+    and coerce.
+    """
     if days is None:
         return []
     if not isinstance(days, list):
         raise ValueError("`days_of_week` must be a list of integers 0..6")
     out = set()
     for d in days:
-        if not isinstance(d, int) or isinstance(d, bool) or not 0 <= d <= 6:
+        if isinstance(d, bool):
             raise ValueError("`days_of_week` values must be integers 0..6")
-        out.add(d)
+        if isinstance(d, int):
+            di = d
+        elif isinstance(d, float) and d.is_integer():
+            di = int(d)
+        else:
+            raise ValueError("`days_of_week` values must be integers 0..6")
+        if not 0 <= di <= 6:
+            raise ValueError("`days_of_week` values must be integers 0..6")
+        out.add(di)
     return sorted(out)
 
 
