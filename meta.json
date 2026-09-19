@@ -23,6 +23,11 @@
             "api": "rdk:component:generic",
             "model": "viam:switchbot:thermostat",
             "markdown_link": "README.md#thermostat"
+        },
+        {
+            "api": "rdk:component:generic",
+            "model": "viam:switchbot:clicker",
+            "markdown_link": "README.md#clicker"
         }
     ],
     "entrypoint": "run.sh",

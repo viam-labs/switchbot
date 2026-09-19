@@ -9,6 +9,7 @@ Models in this module:
 | `viam:switchbot:bot` | `rdk:component:switch` | SwitchBot Bot (button pusher) |
 | `viam:switchbot:curtain` | `rdk:component:generic` | SwitchBot Curtain (2/3) |
 | `viam:switchbot:meter` | `rdk:component:sensor` | SwitchBot Meter, Meter Plus, and Hub 2's built-in sensor |
+| `viam:switchbot:clicker` | `rdk:component:generic` | SwitchBot Bot in Press mode exposed as a momentary tap (doorbell, intercom, garage remote, …) |
 
 Cloud control of Bot and Curtain requires a paired **SwitchBot Hub** (Hub Mini, Hub 2, or Hub 3) with Cloud Services enabled.
 
@@ -318,6 +319,39 @@ Scheduled:
 ```json
 { "command": "reorder_automations", "ids": ["a1b2c3d4", "e5f6g7h8"] }
 ```
+
+### Clicker
+
+Uses `rdk:component:generic`. Wraps a SwitchBot Bot as a momentary tap — for a doorbell, an apartment intercom's unlock button, a garage remote, or anything else where a single press is the whole interaction. Configure the Bot in **Press Mode** via the SwitchBot app so a single API call does a tap.
+
+The meaning of the click is the frontend's concern; this module just exposes a click verb and tracks the timestamp.
+
+Config:
+
+```json
+{
+  "name": "building_door",
+  "type": "generic",
+  "model": "viam:switchbot:clicker",
+  "attributes": {
+    "token": "...",
+    "secret": "...",
+    "device_id": "...",
+    "hold_ms": 500
+  }
+}
+```
+
+- `hold_ms` (default 500) — reserved for future turnOn/turnOff style if a user's bot is in Switch mode. Press mode ignores it.
+
+State (`last_clicked_at`) persists to `~/.viam/switchbot-clicker-<name>-state.json`.
+
+Commands:
+
+| `command` | Effect |
+|---|---|
+| `status` | Returns `{ kind: "clicker", last_clicked_at, battery, hold_ms, ready }` |
+| `click` | Sends SwitchBot `press`; stamps `last_clicked_at` |
 
 ## Development
 
