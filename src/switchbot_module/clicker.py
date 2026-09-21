@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from viam.components.generic import Generic
+from viam.components.sensor import Sensor
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.common import ResourceName
 from viam.resource.base import ResourceBase
@@ -48,6 +49,9 @@ class Clicker(Generic):
         self._state_path: str = ""
         self._state: dict = {"last_clicked_at": None}
         self._state_lock: asyncio.Lock | None = None
+        self._events_sensor: Sensor | None = None
+        self._events_sensor_name: str = ""
+        self._event_type: str = "clicker_pressed"
 
     @classmethod
     def new(
@@ -70,7 +74,16 @@ class Clicker(Generic):
             not isinstance(hold_ms, int | float) or isinstance(hold_ms, bool) or hold_ms < 0
         ):
             raise ValueError("`hold_ms` must be a non-negative number if set")
-        return []
+        deps: list[str] = []
+        events_sensor = attrs.get("events_sensor")
+        if events_sensor is not None:
+            if not isinstance(events_sensor, str) or not events_sensor:
+                raise ValueError("`events_sensor` must be a non-empty string")
+            deps.append(events_sensor)
+        event_type = attrs.get("event_type")
+        if event_type is not None and (not isinstance(event_type, str) or not event_type):
+            raise ValueError("`event_type` must be a non-empty string if set")
+        return deps
 
     def reconfigure(
         self,
@@ -87,6 +100,20 @@ class Clicker(Generic):
         )
         self._state = self._load_state()
         self._state_lock = asyncio.Lock()
+
+        self._events_sensor_name = str(attrs.get("events_sensor") or "")
+        self._event_type = str(attrs.get("event_type") or "clicker_pressed")
+        self._events_sensor = None
+        if self._events_sensor_name:
+            for name, resource in dependencies.items():
+                if name.name == self._events_sensor_name and isinstance(resource, Sensor):
+                    self._events_sensor = resource
+                    break
+            if self._events_sensor is None:
+                LOGGER.warning(
+                    "events_sensor %r not found among dependencies; events will not be pushed",
+                    self._events_sensor_name,
+                )
 
     def _load_state(self) -> dict:
         path = Path(self._state_path).expanduser()
@@ -131,7 +158,18 @@ class Clicker(Generic):
         async with self._state_lock:
             self._state["last_clicked_at"] = fired_at
             self._save_state()
+        await self._push_event(
+            {"event_type": self._event_type, "source": self.name, "at": fired_at}
+        )
         return {"ok": True, "last_clicked_at": fired_at}
+
+    async def _push_event(self, event: dict) -> None:
+        if self._events_sensor is None:
+            return
+        try:
+            await self._events_sensor.do_command({"command": "push_event", "event": event})
+        except Exception as e:
+            LOGGER.warning("push_event failed: %s", e)
 
     async def do_command(
         self,

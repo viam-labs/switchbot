@@ -226,8 +226,10 @@ class Thermostat(Generic):
         super().__init__(name)
         self._bot: Switch | None = None
         self._meter: Sensor | None = None
+        self._events_sensor: Sensor | None = None
         self._bot_name: str = ""
         self._meter_name: str = ""
+        self._events_sensor_name: str = ""
         self._poll_interval_sec: int = DEFAULT_POLL_INTERVAL_SEC
         self._cooldown_sec: int = DEFAULT_COOLDOWN_SEC
         self._state_path: str = ""
@@ -271,7 +273,13 @@ class Thermostat(Generic):
                     "active_end": attrs.get("active_end"),
                 }
             )
-        return [str(attrs["bot_name"]), str(attrs["meter_name"])]
+        deps = [str(attrs["bot_name"]), str(attrs["meter_name"])]
+        events_sensor = attrs.get("events_sensor")
+        if events_sensor is not None:
+            if not isinstance(events_sensor, str) or not events_sensor:
+                raise ValueError("`events_sensor` must be a non-empty string")
+            deps.append(events_sensor)
+        return deps
 
     def reconfigure(
         self,
@@ -287,17 +295,31 @@ class Thermostat(Generic):
             attrs.get("state_path") or DEFAULT_STATE_PATH.format(name=config.name)
         )
 
+        self._events_sensor_name = str(attrs.get("events_sensor") or "")
+
         self._bot = None
         self._meter = None
+        self._events_sensor = None
         for name, resource in dependencies.items():
             if name.name == self._bot_name and isinstance(resource, Switch):
                 self._bot = resource
             elif name.name == self._meter_name and isinstance(resource, Sensor):
                 self._meter = resource
+            elif (
+                self._events_sensor_name
+                and name.name == self._events_sensor_name
+                and isinstance(resource, Sensor)
+            ):
+                self._events_sensor = resource
         if self._bot is None:
             raise RuntimeError(f"Switch dependency {self._bot_name!r} not found")
         if self._meter is None:
             raise RuntimeError(f"Sensor dependency {self._meter_name!r} not found")
+        if self._events_sensor_name and self._events_sensor is None:
+            LOGGER.warning(
+                "events_sensor %r not found among dependencies; events will not be pushed",
+                self._events_sensor_name,
+            )
 
         self._state = self._load_and_migrate_state(attrs)
 
@@ -508,9 +530,29 @@ class Thermostat(Generic):
         return False
 
     def _record_action(self, position: int) -> None:
-        self._state["last_action_at"] = datetime.now(UTC).isoformat()
+        at = datetime.now(UTC).isoformat()
+        self._state["last_action_at"] = at
         self._state["last_action_position"] = position
         self._save_state()
+        # Fire-and-forget so the tick loop stays snappy even if the sensor is slow.
+        asyncio.create_task(
+            self._push_event(
+                {
+                    "event_type": "thermostat_on" if position == 1 else "thermostat_off",
+                    "source": self.name,
+                    "at": at,
+                    "bot_position": position,
+                }
+            )
+        )
+
+    async def _push_event(self, event: dict) -> None:
+        if self._events_sensor is None:
+            return
+        try:
+            await self._events_sensor.do_command({"command": "push_event", "event": event})
+        except Exception as e:
+            LOGGER.warning("push_event failed: %s", e)
 
     # ------------------------------------------------------------------
     # do_command
