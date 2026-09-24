@@ -583,6 +583,8 @@ class Thermostat(Generic):
         return {
             "automations": [_automation_view(auto) for auto in self._state.get("automations", [])],
             "active_id": active["id"] if active else None,
+            "bot_name": self._bot_name,
+            "meter_name": self._meter_name,
             "temperature_c": temp_c,
             "humidity_pct": humidity,
             "bot_position": position,
